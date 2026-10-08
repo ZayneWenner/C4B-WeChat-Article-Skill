@@ -502,6 +502,45 @@ def embed_images(soup, base_dir):
 # ============================================================
 # 主流程
 # ============================================================
+def normalize_line_heights(soup):
+    """把倍数行高（line-height: 1.75）统一改写为显式 px（line-height: 28px）。
+
+    为什么必须做这一步：公众号编辑器的「内容结构检测」在比对行高与字号时按
+    数值字面量比较，`line-height: 1.75` 会被读成 1.75 < 16px，从而误报
+    「行高小于字体大小，可能导致文字重叠」；写成 px 后两项同为像素值，
+    检测器不再误判。同时保留 ≥1.75 倍的字号比例，保证多行文字不会真的重叠。
+    """
+    def nearest_font_size(tag, default=16.0):
+        node = tag.parent
+        while node is not None:
+            m = re.search(r'font-size\s*:\s*([\d.]+)px', node.get('style') or '')
+            if m:
+                return float(m.group(1))
+            node = node.parent
+        return default
+
+    def fix_style(style_str, inherited_fs):
+        m_fs = re.search(r'font-size\s*:\s*([\d.]+)px', style_str)
+        fs = float(m_fs.group(1)) if m_fs else inherited_fs
+
+        def repl(m):
+            if m.group(2):  # 已经是 px，原样保留，避免二次改写
+                return m.group(0)
+            ratio = float(m.group(1))
+            return 'line-height: %dpx' % round(fs * max(ratio, 1.75))
+
+        return re.sub(r'line-height\s*:\s*([\d.]+)(px)?\s*(?=;|$)', repl, style_str)
+
+    for tag in soup.find_all(True):
+        style = tag.get('style')
+        if not style or 'line-height' not in style:
+            continue
+        new_style = fix_style(style, nearest_font_size(tag))
+        if new_style != style:
+            tag['style'] = new_style
+    return soup
+
+
 def convert(input_path, output_path, args):
     path = Path(input_path)
     if not path.exists():
@@ -558,6 +597,8 @@ def convert(input_path, output_path, args):
     if args.typo:
         print("🔤 优化中文排版...")
         fsoup = apply_typography(fsoup)
+    fsoup = normalize_line_heights(fsoup)
+
     if args.embed_images:
         print("🖼️ 内嵌本地图片...")
         fsoup = embed_images(fsoup, str(path.parent))
